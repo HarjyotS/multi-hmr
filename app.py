@@ -22,6 +22,8 @@ import gradio as gr
 from PIL import Image, ImageOps
 import numpy as np
 from pathlib import Path
+import multiprocessing
+multiprocessing.set_start_method('spawn')
 
 if torch.cuda.is_available() and torch.cuda.device_count()>0:
     device = torch.device('cuda:0')
