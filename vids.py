@@ -1,10 +1,6 @@
 import os
 import cv2
-import sys
 import torch
-import time
-import random
-import pickle as pkl
 import numpy as np
 from PIL import Image, ImageOps
 from argparse import ArgumentParser
@@ -12,15 +8,12 @@ from pathlib import Path
 from tqdm import tqdm
 from moviepy.editor import ImageSequenceClip
 
-
 from utils import (
     normalize_rgb,
     render_meshes,
     get_focalLength_from_fieldOfView,
     demo_color as color,
     print_distance_on_image,
-    render_side_views,
-    create_scene,
     MEAN_PARAMS,
     CACHE_DIR_MULTIHMR,
     SMPLX_DIR,
@@ -30,13 +23,10 @@ from model import Model
 torch.cuda.empty_cache()
 
 np.random.seed(seed=0)
-random.seed(0)
 
 
-def open_image(img_path, img_size, device=torch.device("cuda")):
-    """Open image at path, resize and pad"""
-    # Open and reshape
-    img_pil = Image.open(img_path).convert("RGB")
+def open_image_from_pil(img_pil, img_size, device=torch.device("cuda")):
+    """Open image from PIL, resize and pad"""
     img_pil = ImageOps.contain(
         img_pil, (img_size, img_size)
     )  # keep the same aspect ratio
@@ -79,7 +69,7 @@ def get_camera_parameters(
 
 
 def load_model(model_name, device=torch.device("cuda")):
-    """Open a checkpoint, build Multi-HMR using saved arguments, load the model weigths."""
+    """Open a checkpoint, build Multi-HMR using saved arguments, load the model weights"""
     # Model
     ckpt_path = os.path.join(CACHE_DIR_MULTIHMR, model_name + ".pt")
     if not os.path.isfile(ckpt_path):
@@ -94,7 +84,9 @@ def load_model(model_name, device=torch.device("cuda")):
             )
             print(f"Ckpt downloaded to {ckpt_path}")
         except:
-            assert "Please contact fabien.baradel@naverlabs.com or open an issue on the github repo"
+            raise RuntimeError(
+                "Please contact fabien.baradel@naverlabs.com or open an issue on the github repo"
+            )
 
     # Load weights
     print("Loading model")
@@ -105,12 +97,12 @@ def load_model(model_name, device=torch.device("cuda")):
     for k, v in vars(ckpt["args"]).items():
         kwargs[k] = v
 
-    # Build the model.
+    # Build the model
     kwargs["type"] = ckpt["args"].train_return_type
     kwargs["img_size"] = ckpt["args"].img_size[0]
     model = Model(**kwargs).to(device)
 
-    # Load weights into model.
+    # Load weights into model
     model.load_state_dict(ckpt["model_state_dict"], strict=False)
     print("Weights have been loaded")
 
@@ -120,8 +112,8 @@ def load_model(model_name, device=torch.device("cuda")):
 def forward_model(
     model, input_image, camera_parameters, det_thresh=0.3, nms_kernel_size=1
 ):
-    """Make a forward pass on an input image and camera parameters."""
-    # Forward the model.
+    """Make a forward pass on an input image and camera parameters"""
+    # Forward the model
     with torch.no_grad():
         with torch.cuda.amp.autocast(enabled=True):
             humans = model(
@@ -135,18 +127,19 @@ def forward_model(
 
 
 def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
-    # Color of humans seen in the image.
+    # Color of humans seen in the image
     _color = [color[0] for _ in range(len(humans))] if unique_color else color
 
-    # Get focal and princpt for rendering.
+    # Get focal and princpt for rendering
     focal = np.asarray([K[0, 0, 0].cpu().numpy(), K[0, 1, 1].cpu().numpy()])
     princpt = np.asarray([K[0, 0, -1].cpu().numpy(), K[0, 1, -1].cpu().numpy()])
 
-    # Get the vertices produced by the model.
+    # Get the vertices produced by the model
     verts_list = [humans[j]["verts_smplx"].cpu().numpy() for j in range(len(humans))]
     faces_list = [model.smpl_layer["neutral"].bm_x.faces for j in range(len(humans))]
+    # print(faces_list[0])
 
-    # Render the meshes onto the image.
+    # Render the meshes onto the image
     pred_rend_array = render_meshes(
         np.asarray(img_pil),
         verts_list,
@@ -178,7 +171,7 @@ def process_video(
     fps = video_cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count / fps
-    step = max(1, int(fps / 30))  # to get ~10 fps
+    sample_rate = int(fps / 20)  # sampling every nth frame to get ~10 fps
 
     frames = []
     timestamps = []
@@ -187,7 +180,7 @@ def process_video(
         success, frame = video_cap.read()
         if not success:
             break
-        if frame_idx % step == 0:
+        if frame_idx % sample_rate == 0:
             img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             x, img_pil_nopad = open_image_from_pil(img_pil, img_size)
             K = get_camera_parameters(img_size, fov=fov)
@@ -210,33 +203,11 @@ def process_video(
     output_video_path = os.path.join(
         output_folder, f"{Path(video_path).stem}_processed.mp4"
     )
-    clip = ImageSequenceClip(frames, fps=30)
+    clip = ImageSequenceClip(frames, fps=10)
+    clip = clip.set_duration(duration)  # maintain the original video length
     clip.write_videofile(output_video_path, codec="libx264")
 
     print(f"Processed video saved to {output_video_path}")
-
-
-def open_image_from_pil(img_pil, img_size, device=torch.device("cuda")):
-    """Open image from PIL, resize and pad"""
-    img_pil = ImageOps.contain(
-        img_pil, (img_size, img_size)
-    )  # keep the same aspect ratio
-
-    # Keep a copy for visualisations.
-    img_pil_bis = ImageOps.pad(
-        img_pil.copy(), size=(img_size, img_size), color=(255, 255, 255)
-    )
-    img_pil = ImageOps.pad(
-        img_pil, size=(img_size, img_size)
-    )  # pad with zero on the smallest side
-
-    # Go to numpy
-    resize_img = np.asarray(img_pil)
-
-    # Normalize and go to torch.
-    resize_img = normalize_rgb(resize_img)
-    x = torch.from_numpy(resize_img).unsqueeze(0).to(device)
-    return x, img_pil_bis
 
 
 if __name__ == "__main__":
