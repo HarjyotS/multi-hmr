@@ -137,6 +137,7 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
     # Get the vertices produced by the model
     verts_list = [humans[j]["verts_smplx"].cpu().numpy() for j in range(len(humans))]
     faces_list = [model.smpl_layer["neutral"].bm_x.faces for j in range(len(humans))]
+    # print(faces_list[0])
 
     # Render the meshes onto the image
     pred_rend_array = render_meshes(
@@ -170,7 +171,7 @@ def process_video(
     fps = video_cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count / fps
-    sample_rate = int(fps / 10)  # sampling every nth frame to get ~10 fps
+    sample_rate = int(fps / 20)  # sampling every nth frame to get ~10 fps
 
     frames = []
     timestamps = []
