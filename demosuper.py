@@ -4,7 +4,7 @@
 
 import os
 
-from scripts.graphfrmpts import equation_plane, midpoint, normal_line_to_plane
+from scripts.graphfrmpts import equation_plane, midpoint, normal_line_to_plane, frustum_equation, point_in_frustum
 
 # os.environ["PYOPENGL_PLATFORM"] = "egl"
 os.environ["EGL_DEVICE_ID"] = "0"
@@ -168,6 +168,7 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
     midpoint1 = midpoint(l_eye1, r_eye1, chin1)
     plane1 = equation_plane(*l_eye1, *r_eye1, *chin1)
     vline1 = normal_line_to_plane(*plane1, *midpoint1)
+    frustum = frustum_equation(*plane1, l_eye1, r_eye1, chin1, 0.1, 0.05)
 
     if len(verts_list) > 1:
         l_eye2 = list(verts_list[1][9504 - 1].tolist())
@@ -176,6 +177,7 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
         midpoint2 = midpoint(l_eye2, r_eye2, chin2)
         plane2 = equation_plane(*l_eye2, *r_eye2, *chin2)
         vline2 = normal_line_to_plane(*plane2, *midpoint2)
+        point_frustum = point_in_frustum(*plane1, l_eye1, r_eye1, chin1, 0.1, 0.05, midpoint2)
 
     with open("verts.txt", "w") as f:
         f.write(f"l_eye1: {l_eye1}\n")
@@ -195,6 +197,11 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
             )
             f.write(f"midpoint2: {midpoint2}\n")
             f.write(f"vline2: {vline2}\n")
+        f.write(f"frustum: {frustum}\n")
+        try:
+            f.write(f"EYE CONTACT: {point_frustum}\n")
+        except:
+            print("NO PERSON 2 IN IMAGE!")
     with open("verts1.txt", "w") as f:
         for vert in verts_list[0]:
             f.write(f"{list(vert)}\n")
