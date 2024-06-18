@@ -159,6 +159,7 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
     # Get the vertices produced by the model.
     verts_list = [humans[j]["verts_smplx"].cpu().numpy() for j in range(len(humans))]
     faces_list = [model.smpl_layer["neutral"].bm_x.faces for j in range(len(humans))]
+    print(faces_list)
 
     # Render the meshes onto the image.
     pred_rend_array = render_meshes(
@@ -317,6 +318,8 @@ if __name__ == "__main__":
         if args.save_mesh:
             # npy file
             l_mesh = [hum["verts_smplx"].cpu().numpy() for hum in humans]
+            with open(save_fn + ".pkl", "wb") as f:
+                pkl.dump(l_mesh, f)
             mesh_fn = save_fn + ".npy"
             np.save(mesh_fn, np.asarray(l_mesh), allow_pickle=True)
             x = np.load(mesh_fn, allow_pickle=True)
