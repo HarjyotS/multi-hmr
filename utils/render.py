@@ -479,6 +479,20 @@ def print_distance_on_image(pred_rend_array, humans, _color):
     return np.asarray(rend_pil)
 
 
+def print_eye_contact(pred_rend_array, cont):
+    # Add distance to the image.
+    font = ImageFont.load_default()
+    rend_pil = Image.fromarray(pred_rend_array)
+    draw = ImageDraw.Draw(rend_pil)
+
+    # type the variable cont boolean in the top left of the image
+    txt = f"Eye contact: {cont}"
+    fill = (255, 255, 255)
+    draw.text((10, 10), txt, fill=fill, font=font)
+
+    return np.asarray(rend_pil)
+
+
 def get_bbox(points, factor=1.0, output_format="xywh"):
     """
     Args:

@@ -8,6 +8,13 @@ from pathlib import Path
 from tqdm import tqdm
 from moviepy.editor import ImageSequenceClip
 
+from scripts.graphfrmpts import (
+    equation_plane,
+    frustum_equation,
+    midpoint,
+    normal_line_to_plane,
+    point_in_frustum,
+)
 from utils import (
     normalize_rgb,
     render_meshes,
@@ -20,6 +27,7 @@ from utils import (
     create_scene,
 )
 from model import Model
+from utils.render import print_eye_contact
 
 torch.cuda.empty_cache()
 
@@ -150,6 +158,59 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
         alpha=1.0,
         color=_color,
     )
+
+    l_eye1 = list(verts_list[0][9504 - 1].tolist())
+    r_eye1 = list(verts_list[0][10050 - 1].tolist())
+    chin1 = list(verts_list[0][8765 - 1].tolist())
+    midpoint1 = midpoint(l_eye1, r_eye1, chin1)
+    plane1 = equation_plane(*l_eye1, *r_eye1, *chin1)
+    vline1 = normal_line_to_plane(*plane1, *midpoint1)
+
+    if len(verts_list) > 1:
+        print("More than one human detected")
+        l_eye2 = list(verts_list[1][9504 - 1].tolist())
+        r_eye2 = list(verts_list[1][10050 - 1].tolist())
+        chin2 = list(verts_list[1][8765 - 1].tolist())
+        midpoint2 = midpoint(l_eye2, r_eye2, chin2)
+        plane2 = equation_plane(*l_eye2, *r_eye2, *chin2)
+        vline2 = normal_line_to_plane(*plane2, *midpoint2)
+        frustum = frustum_equation(*plane2, l_eye2, r_eye2, chin2, 0.1, 0.05)
+
+        point_frustum = point_in_frustum(
+            *plane2, l_eye2, r_eye2, chin2, 0.1, 0.05, midpoint1
+        )
+        print("eye contact", point_frustum)
+        pred_rend_array = print_eye_contact(pred_rend_array, point_frustum)
+    with open("verts.txt", "w") as f:
+        f.write(f"l_eye1: {l_eye1}\n")
+        f.write(f"r_eye1: {r_eye1}\n")
+        f.write(f"chin1: {chin1}\n")
+        f.write(
+            f"Equation of the plane is: {plane1[0]}x + {plane1[1]}y + {plane1[2]}z + {plane1[3]} = 0\n"
+        )
+        f.write(f"midpoint1: {midpoint1}\n")
+        f.write(f"vline1: {vline1}\n")
+        if len(verts_list) > 1:
+            f.write(f"l_eye2: {l_eye2}\n")
+            f.write(f"r_eye2: {r_eye2}\n")
+            f.write(f"chin2: {chin2}\n")
+            f.write(
+                f"Equation of the plane is: {plane2[0]}x + {plane2[1]}y + {plane2[2]}z + {plane2[3]} = 0\n"
+            )
+            f.write(f"midpoint2: {midpoint2}\n")
+            f.write(f"vline2: {vline2}\n")
+            f.write(f"frustum: {frustum}\n")
+        try:
+            f.write(f"EYE CONTACT: {point_frustum}\n")
+        except:
+            print("NO PERSON 2 IN IMAGE!")
+    with open("verts1.txt", "w") as f:
+        for vert in verts_list[0]:
+            f.write(f"{list(vert)}\n")
+    if len(verts_list) > 1:
+        with open("verts2.txt", "w") as f:
+            for vert in verts_list[1]:
+                f.write(f"{list(vert)}\n")
     return pred_rend_array, _color
 
 
@@ -178,7 +239,7 @@ def process_video(
     fps = video_cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = frame_count / fps
-    sample_rate = int(fps / 20)  # sampling every nth frame to get ~10 fps
+    sample_rate = int(fps / 10)  # sampling every nth frame to get ~10 fps
 
     frames = []
     timestamps = []
