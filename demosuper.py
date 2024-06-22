@@ -168,7 +168,7 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
     midpoint1 = midpoint(l_eye1, r_eye1, chin1)
     plane1 = equation_plane(*l_eye1, *r_eye1, *chin1)
     vline1 = normal_line_to_plane(*plane1, *midpoint1)
-    frustum = frustum_equation(*plane1, l_eye1, r_eye1, chin1, 0.1, 0.05)
+    frustum = frustum_equation(*plane1, l_eye1, r_eye1, chin1, 0.1, 0.1)
 
     if len(verts_list) > 1:
         l_eye2 = list(verts_list[1][9504 - 1].tolist())
@@ -228,7 +228,7 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--model_name", type=str, default="multiHMR_896_L_synth")
-    parser.add_argument("--img_folder", type=str, default="example_data")
+    parser.add_argument("--img_path", type=str, default="example_data/images.jpg")
     parser.add_argument("--out_folder", type=str, default="demo_out")
     parser.add_argument("--save_mesh", type=int, default=0, choices=[0, 1])
     parser.add_argument("--extra_views", type=int, default=0, choices=[0, 1])
@@ -284,11 +284,7 @@ if __name__ == "__main__":
 
     # Input images
     suffixes = (".jpg", ".jpeg", ".png", ".webp")
-    l_img_path = [
-        file
-        for file in os.listdir(args.img_folder)
-        if file.endswith(suffixes) and file[0] != "."
-    ]
+    l_img_path = [args.img_path]
 
     # Loading
     model = load_model(args.model_name)
@@ -308,7 +304,7 @@ if __name__ == "__main__":
 
         # Get input in the right format for the model
         img_size = model.img_size
-        x, img_pil_nopad = open_image(os.path.join(args.img_folder, img_path), img_size)
+        x, img_pil_nopad = open_image(img_path, img_size)
 
         # Get camera parameters
         p_x, p_y = None, None
