@@ -4,7 +4,11 @@ import re
 import subprocess
 from PIL import Image, ImageDraw, ImageFont
 
-video_path = "Paul_Tang_test_video.MOV"
+# CHANGE!!!
+path_to_video = "test_video.mp4"
+output_video_path = "OUTPUT_VIDEO.mp4"
+video_frames_folder = "video_frames"
+video_output_frames_folder = "video_output_frames"
 
 def run_on_image(image_path, output_path):
     # Step 1: Run the command to execute demosuper.py
@@ -43,14 +47,12 @@ def run_on_image(image_path, output_path):
 
 def process_video(video_path):
     # Step 1: Extract frames from the video at 10 fps
-    video_frames_folder = "video_frames"
-    video_output_frames_folder = "video_output_frames"
     os.makedirs(video_frames_folder, exist_ok=True)
     os.makedirs(video_output_frames_folder, exist_ok=True)
     
     subprocess.call([
         "ffmpeg", "-i", video_path, "-vf", "fps=10", f"{video_frames_folder}/frame_%04d.png"
-    ])
+    ], shell=True)
 
     # Step 2: Process each frame with the eye contact script
     for frame_name in os.listdir(video_frames_folder):
@@ -60,16 +62,15 @@ def process_video(video_path):
             run_on_image(frame_path, output_frame_path)
 
     # Step 3: Compile the processed frames back into a video
-    output_video_path = "output_video.mp4"
     subprocess.call([
         "ffmpeg", "-framerate", "10", "-i", f"{video_output_frames_folder}/frame_%04d.png", "-c:v", "libx264", "-pix_fmt", "yuv420p", output_video_path
-    ])
+    ], shell=True)
 
     # Step 4: Clean up temporary folders
     shutil.rmtree(video_frames_folder)
     shutil.rmtree(video_output_frames_folder)
 
 # Example usage
-process_video(video_path)
+process_video(path_to_video)
 
 print("Video processing complete. Check the output_video.mp4 for results.")
