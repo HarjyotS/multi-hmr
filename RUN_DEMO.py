@@ -1,6 +1,14 @@
 import os
+import shutil
 import re
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
+
+# CHANGE!!!
+path_to_video = "test_video.mp4"
+output_video_path = "OUTPUT_VIDEO.mp4"
+video_frames_folder = "video_frames"
+video_output_frames_folder = "video_output_frames"
 
 def run_on_image(image_path, output_path):
     # Step 1: Run the command to execute demosuper.py
@@ -37,12 +45,32 @@ def run_on_image(image_path, output_path):
 
     add_text_to_image(image_path, f"{eye_contact}", output_path)
 
-img_folder = "example_data"
-out_folder = "eye_contact_results"
-# Loop through images in the img_folder and process them
-for img_name in os.listdir(img_folder):
-    img_path = os.path.join(img_folder, img_name)
-    if os.path.isfile(img_path) and img_path.lower().endswith(('.png', '.jpg', '.jpeg')):
-        run_on_image(img_path, f"{out_folder}/{img_name}")
+def process_video(video_path):
+    # Step 1: Extract frames from the video at 10 fps
+    os.makedirs(video_frames_folder, exist_ok=True)
+    os.makedirs(video_output_frames_folder, exist_ok=True)
+    
+    subprocess.call([
+        "ffmpeg", "-i", video_path, "-vf", "fps=10", f"{video_frames_folder}/frame_%04d.png"
+    ], shell=True)
 
-print("Processing complete. Check the demo_out folder for results.")
+    # Step 2: Process each frame with the eye contact script
+    for frame_name in os.listdir(video_frames_folder):
+        frame_path = os.path.join(video_frames_folder, frame_name)
+        if os.path.isfile(frame_path) and frame_path.lower().endswith('.png'):
+            output_frame_path = os.path.join(video_output_frames_folder, frame_name)
+            run_on_image(frame_path, output_frame_path)
+
+    # Step 3: Compile the processed frames back into a video
+    subprocess.call([
+        "ffmpeg", "-framerate", "10", "-i", f"{video_output_frames_folder}/frame_%04d.png", "-c:v", "libx264", "-pix_fmt", "yuv420p", output_video_path
+    ], shell=True)
+
+    # Step 4: Clean up temporary folders
+    shutil.rmtree(video_frames_folder)
+    shutil.rmtree(video_output_frames_folder)
+
+# Example usage
+process_video(path_to_video)
+
+print("Video processing complete. Check the output_video.mp4 for results.")
