@@ -2,6 +2,7 @@
 # Copyright (c) 2024-present NAVER Corp.
 # CC BY-NC-SA 4.0 license
 
+import io
 import torch
 import numpy as np
 import pyrender
@@ -479,16 +480,22 @@ def print_distance_on_image(pred_rend_array, humans, _color):
     return np.asarray(rend_pil)
 
 
-def print_eye_contact(pred_rend_array, cont):
-    # Add distance to the image.
-    font = ImageFont.load_default()
+def print_eye_contact(pred_rend_array, cont, font_path="arial.ttf", font_size=24):
+    # Read the font file into memory
+    with open(font_path, "rb") as f:
+        font_bytes = f.read()
+
+    font_stream = io.BytesIO(font_bytes)
+
+    # Load the font from the file-like object
+    font = ImageFont.truetype(font_stream, font_size)
     rend_pil = Image.fromarray(pred_rend_array)
     draw = ImageDraw.Draw(rend_pil)
 
-    # type the variable cont boolean in the top left of the image
+    # Type the variable cont boolean in the top left of the image
     txt = f"Eye contact: {cont}"
-    fill = (255, 255, 255)
-    draw.text((10, 10), txt, fill=fill, font=font)
+    fill = (100, 155, 155)
+    draw.text((100, 100), txt, fill=fill, font=font)
 
     return np.asarray(rend_pil)
 

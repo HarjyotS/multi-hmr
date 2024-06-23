@@ -174,13 +174,13 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
         midpoint2 = midpoint(l_eye2, r_eye2, chin2)
         plane2 = equation_plane(*l_eye2, *r_eye2, *chin2)
         vline2 = normal_line_to_plane(*plane2, *midpoint2)
-        frustum = frustum_equation(*plane2, l_eye2, r_eye2, chin2, 0.1, 0.05)
+        frustum = frustum_equation(*plane2, l_eye2, r_eye2, chin2, 0.3, 0.05)
 
         point_frustum = point_in_frustum(
-            *plane2, l_eye2, r_eye2, chin2, 0.1, 0.05, midpoint1
+            *plane2, l_eye2, r_eye2, chin2, 0.3, 0.05, midpoint1
         )
         print("eye contact", point_frustum)
-        pred_rend_array = print_eye_contact(pred_rend_array, point_frustum)
+
     with open("verts.txt", "w") as f:
         f.write(f"l_eye1: {l_eye1}\n")
         f.write(f"r_eye1: {r_eye1}\n")
@@ -211,6 +211,8 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
         with open("verts2.txt", "w") as f:
             for vert in verts_list[1]:
                 f.write(f"{list(vert)}\n")
+
+    pred_rend_array = print_eye_contact(pred_rend_array, point_frustum)
     return pred_rend_array, _color
 
 
@@ -262,6 +264,7 @@ def process_video(
                 pred_rend_array = print_distance_on_image(
                     pred_rend_array, humans, _color
                 )
+
             frames.append(pred_rend_array)
             timestamps.append(frame_idx / fps)
 
