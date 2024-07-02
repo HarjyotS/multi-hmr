@@ -1,76 +1,456 @@
+# Multi-HMR
+# Copyright (c) 2024-present NAVER Corp.
+# CC BY-NC-SA 4.0 license
+
 import os
-import shutil
-import re
-import subprocess
-from PIL import Image, ImageDraw, ImageFont
 
-# CHANGE!!!
-path_to_video = "test_video.mp4"
-output_video_path = "OUTPUT_VIDEO.mp4"
-video_frames_folder = "video_frames"
-video_output_frames_folder = "video_output_frames"
+from scripts.graphfrmpts import (
+    equation_plane,
+    midpoint,
+    normal_line_to_plane,
+    frustum_equation,
+    point_in_frustum,
+)
+from utils.render import print_eye_contact, print_orientation
 
-def run_on_image(image_path, output_path):
-    # Step 1: Run the command to execute demosuper.py
-    command = f"python demosuper.py --img_path \"{image_path}\" --out_folder demo_out --extra_views 1 --model_name multiHMR_896_L --distance 1"
-    os.system(command)
+# os.environ["PYOPENGL_PLATFORM"] = "egl"
+os.environ["EGL_DEVICE_ID"] = "0"
 
-    # Step 2: Read the verts.txt file to check for eye contact
-    verts_file_path = "verts.txt"
+import sys
+from argparse import ArgumentParser
+import random
+import pickle as pkl
+import numpy as np
+from PIL import Image, ImageOps
+import torch
+from tqdm import tqdm
+import time
 
-    with open(verts_file_path, 'r') as file:
-        content = file.read()
+from utils import (
+    normalize_rgb,
+    render_meshes,
+    get_focalLength_from_fieldOfView,
+    demo_color as color,
+    print_distance_on_image,
+    render_side_views,
+    create_scene,
+    MEAN_PARAMS,
+    CACHE_DIR_MULTIHMR,
+    SMPLX_DIR,
+)
+from model import Model
+from pathlib import Path
+import warnings
 
-    eye_contact_match = re.search(r"EYE CONTACT: (True|False)", content)
-    eye_contact = eye_contact_match.group(1) if eye_contact_match else "Unknown"
+torch.cuda.empty_cache()
 
-    # Function to add text to an image
-    def add_text_to_image(image_path, text, output_path):
-        image = Image.open(image_path)
-        draw = ImageDraw.Draw(image)
-        font = ImageFont.load_default()
-        font_size = int(image.height / 20)
-        font = ImageFont.truetype("arial.ttf", font_size)
+np.random.seed(seed=0)
+random.seed(0)
+global count
+count = 0
 
-        # Position for the text (bottom-right corner)
-        text_position = (image.width - 150, image.height - 30)
-        # Make text never go out of bounds
-        text_position = (min(text_position[0], image.width - 150), min(text_position[1], image.height - 30))
 
-        # Add text to image
-        draw.text(text_position, text, font=font, fill=(255, 0, 0))
+def open_image(img_path, img_size, device=torch.device("cuda")):
+    """Open image at path, resize and pad"""
 
-        # Save the modified image
-        image.save(output_path)
+    # Open and reshape
+    img_pil = Image.open(img_path).convert("RGB")
+    img_pil = ImageOps.contain(
+        img_pil, (img_size, img_size)
+    )  # keep the same aspect ratio
 
-    add_text_to_image(image_path, f"{eye_contact}", output_path)
+    # Keep a copy for visualisations.
+    img_pil_bis = ImageOps.pad(
+        img_pil.copy(), size=(img_size, img_size), color=(255, 255, 255)
+    )
+    img_pil = ImageOps.pad(
+        img_pil, size=(img_size, img_size)
+    )  # pad with zero on the smallest side
 
-def process_video(video_path):
-    # Step 1: Extract frames from the video at 10 fps
-    os.makedirs(video_frames_folder, exist_ok=True)
-    os.makedirs(video_output_frames_folder, exist_ok=True)
-    
-    subprocess.call([
-        "ffmpeg", "-i", video_path, "-vf", "fps=10", f"{video_frames_folder}/frame_%04d.png"
-    ], shell=True)
+    # Go to numpy
+    resize_img = np.asarray(img_pil)
 
-    # Step 2: Process each frame with the eye contact script
-    for frame_name in os.listdir(video_frames_folder):
-        frame_path = os.path.join(video_frames_folder, frame_name)
-        if os.path.isfile(frame_path) and frame_path.lower().endswith('.png'):
-            output_frame_path = os.path.join(video_output_frames_folder, frame_name)
-            run_on_image(frame_path, output_frame_path)
+    # Normalize and go to torch.
+    resize_img = normalize_rgb(resize_img)
+    x = torch.from_numpy(resize_img).unsqueeze(0).to(device)
+    return x, img_pil_bis
 
-    # Step 3: Compile the processed frames back into a video
-    subprocess.call([
-        "ffmpeg", "-framerate", "10", "-i", f"{video_output_frames_folder}/frame_%04d.png", "-c:v", "libx264", "-pix_fmt", "yuv420p", output_video_path
-    ], shell=True)
 
-    # Step 4: Clean up temporary folders
-    shutil.rmtree(video_frames_folder)
-    shutil.rmtree(video_output_frames_folder)
+def get_camera_parameters(
+    img_size, fov=60, p_x=None, p_y=None, device=torch.device("cuda")
+):
+    """Given image size, fov and principal point coordinates, return K the camera parameter matrix"""
+    K = torch.eye(3)
+    # Get focal length.
+    focal = get_focalLength_from_fieldOfView(fov=fov, img_size=img_size)
+    K[0, 0], K[1, 1] = focal, focal
 
-# Example usage
-process_video(path_to_video)
+    # Set principal point
+    if p_x is not None and p_y is not None:
+        K[0, -1], K[1, -1] = p_x * img_size, p_y * img_size
+    else:
+        K[0, -1], K[1, -1] = img_size // 2, img_size // 2
 
-print("Video processing complete. Check the output_video.mp4 for results.")
+    # Add batch dimension
+    K = K.unsqueeze(0).to(device)
+    return K
+
+
+def load_model(model_name, device=torch.device("cuda")):
+    """Open a checkpoint, build Multi-HMR using saved arguments, load the model weigths."""
+    # Model
+    ckpt_path = os.path.join(CACHE_DIR_MULTIHMR, model_name + ".pt")
+    if not os.path.isfile(ckpt_path):
+        os.makedirs(CACHE_DIR_MULTIHMR, exist_ok=True)
+        print(f"{ckpt_path} not found...")
+        print("It should be the first time you run the demo code")
+        print("Downloading checkpoint from NAVER LABS Europe website...")
+
+        try:
+            os.system(
+                f"wget -O {ckpt_path} https://download.europe.naverlabs.com/ComputerVision/MultiHMR/{model_name}.pt"
+            )
+            print(f"Ckpt downloaded to {ckpt_path}")
+        except:
+            assert "Please contact fabien.baradel@naverlabs.com or open an issue on the github repo"
+
+    # Load weights
+    print("Loading model")
+    ckpt = torch.load(ckpt_path, map_location=device)
+
+    # Get arguments saved in the checkpoint to rebuild the model
+    kwargs = {}
+    for k, v in vars(ckpt["args"]).items():
+        kwargs[k] = v
+
+    # Build the model.
+    kwargs["type"] = ckpt["args"].train_return_type
+    kwargs["img_size"] = ckpt["args"].img_size[0]
+    model = Model(**kwargs).to(device)
+
+    # Load weights into model.
+    model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    print("Weights have been loaded")
+
+    return model
+
+
+def forward_model(
+    model,
+    input_image,
+    camera_parameters,
+    det_thresh=0.3,
+    nms_kernel_size=1,
+):
+    """Make a forward pass on an input image and camera parameters."""
+
+    # Forward the model.
+    with torch.no_grad():
+        with torch.cuda.amp.autocast(enabled=True):
+            humans = model(
+                input_image,
+                is_training=False,
+                nms_kernel_size=int(nms_kernel_size),
+                det_thresh=det_thresh,
+                K=camera_parameters,
+            )
+
+    return humans
+
+
+def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
+    # Color of humans seen in the image
+    _color = [color[0] for _ in range(len(humans))] if unique_color else color
+    # set color
+
+    # Get focal and princpt for rendering
+    focal = np.asarray([K[0, 0, 0].cpu().numpy(), K[0, 1, 1].cpu().numpy()])
+    princpt = np.asarray([K[0, 0, -1].cpu().numpy(), K[0, 1, -1].cpu().numpy()])
+
+    # Get the vertices produced by the model
+    verts_list = [humans[j]["verts_smplx"].cpu().numpy() for j in range(len(humans))]
+    faces_list = [model.smpl_layer["neutral"].bm_x.faces for j in range(len(humans))]
+    # print(faces_list[0])
+
+    # Render the meshes onto the image
+    pred_rend_array = render_meshes(
+        np.asarray(img_pil),
+        verts_list,
+        faces_list,
+        {"focal": focal, "princpt": princpt},
+        alpha=0.45,
+        color=_color,
+    )
+
+    l_eye1 = list(verts_list[0][9504 - 1].tolist())
+    r_eye1 = list(verts_list[0][10050 - 1].tolist())
+    chin1 = list(verts_list[0][8765 - 1].tolist())
+    midpoint1 = midpoint(l_eye1, r_eye1, chin1)
+    plane1 = equation_plane(*l_eye1, *r_eye1, *chin1)
+    vline1 = normal_line_to_plane(*plane1, *midpoint1)
+
+    if len(verts_list) > 1:
+
+        # code to which place the first person is looking
+        nose1 = list(verts_list[0][2922 - 1].tolist())
+        back_of_head1 = list(verts_list[0][8981 - 1].tolist())
+        l_wrist1 = list(verts_list[0][4628 - 1].tolist())
+        w_wrist1 = list(verts_list[0][7593 - 1].tolist())
+        nose2 = list(verts_list[1][2922 - 1].tolist())
+        back_of_head2 = list(verts_list[1][8981 - 1].tolist())
+        l_wrist2 = list(verts_list[1][4628 - 1].tolist())
+        w_wrist2 = list(verts_list[1][7593 - 1].tolist())
+        # if z of nose smaller than z of back of head then facing towards camera
+        # then check if right hand x is larger than left hand x
+        # if z of nose is larger than z of head, then check if left hand x is larger than right hand x to check if arms crossed
+        if nose1[2] < back_of_head1[2]:
+            if w_wrist1[0] > l_wrist1[0]:
+                print("arms crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "crossed", 0)
+            else:
+                print("arms not crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "not crossed", 0)
+        else:
+            if w_wrist1[0] < l_wrist1[0]:
+                print("not crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "not crossed", 0)
+            else:
+                print("arms crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "crossed", 0)
+        if nose2[2] < back_of_head2[2]:
+            if w_wrist2[0] > l_wrist2[0]:
+                print("arms crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "crossed", 1)
+            else:
+                print("arms not crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "not crossed", 1)
+        else:
+            if w_wrist2[0] < l_wrist2[0]:
+                print("not crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "not crossed", 1)
+            else:
+                print("arms crossed")
+                pred_rend_array = print_orientation(pred_rend_array, "crossed", 0)
+        print("More than one human detected")
+        l_eye2 = list(verts_list[1][9504 - 1].tolist())
+        r_eye2 = list(verts_list[1][10050 - 1].tolist())
+        chin2 = list(verts_list[1][8765 - 1].tolist())
+        midpoint2 = midpoint(l_eye2, r_eye2, chin2)
+        plane2 = equation_plane(*l_eye2, *r_eye2, *chin2)
+        vline2 = normal_line_to_plane(*plane2, *midpoint2)
+        frustum = frustum_equation(*plane2, l_eye2, r_eye2, chin2, 0.6, 0.3)
+
+        point_frustum = point_in_frustum(
+            *plane2, l_eye2, r_eye2, chin2, 0.6, 0.3, midpoint1
+        )
+        print("eye contact", point_frustum)
+        global count
+        if point_frustum:
+            count = count + 1
+
+    with open("verts.txt", "w") as f:
+        f.write(f"l_eye1: {l_eye1}\n")
+        f.write(f"r_eye1: {r_eye1}\n")
+        f.write(f"chin1: {chin1}\n")
+        f.write(
+            f"Equation of the plane is: {plane1[0]}x + {plane1[1]}y + {plane1[2]}z + {plane1[3]} = 0\n"
+        )
+        f.write(f"midpoint1: {midpoint1}\n")
+        f.write(f"vline1: {vline1}\n")
+        if len(verts_list) > 1:
+            f.write(f"l_eye2: {l_eye2}\n")
+            f.write(f"r_eye2: {r_eye2}\n")
+            f.write(f"chin2: {chin2}\n")
+            f.write(
+                f"Equation of the plane is: {plane2[0]}x + {plane2[1]}y + {plane2[2]}z + {plane2[3]} = 0\n"
+            )
+            f.write(f"midpoint2: {midpoint2}\n")
+            f.write(f"vline2: {vline2}\n")
+            f.write(f"frustum: {frustum}\n")
+        try:
+            f.write(f"EYE CONTACT: {point_frustum}\n")
+        except:
+            print("NO PERSON 2 IN IMAGE!")
+    with open("verts1.txt", "w") as f:
+        for vert in verts_list[0]:
+            f.write(f"{list(vert)}\n")
+    if len(verts_list) > 1:
+        with open("verts2.txt", "w") as f:
+            for vert in verts_list[1]:
+                f.write(f"{list(vert)}\n")
+
+        pred_rend_array = print_eye_contact(pred_rend_array, point_frustum)
+    return pred_rend_array, _color
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+    parser.add_argument("--model_name", type=str, default="multiHMR_896_L_synth")
+    parser.add_argument("--img_folder", type=str, default="example_data")
+    parser.add_argument("--out_folder", type=str, default="demo_out")
+    parser.add_argument("--save_mesh", type=int, default=0, choices=[0, 1])
+    parser.add_argument("--extra_views", type=int, default=0, choices=[0, 1])
+    parser.add_argument("--det_thresh", type=float, default=0.3)
+    parser.add_argument("--nms_kernel_size", type=float, default=3)
+    parser.add_argument("--fov", type=float, default=60)
+    parser.add_argument(
+        "--distance",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="add distance on the reprojected mesh",
+    )
+    parser.add_argument(
+        "--unique_color",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="only one color for all humans",
+    )
+
+    args = parser.parse_args()
+
+    dict_args = vars(args)
+
+    assert torch.cuda.is_available()
+
+    # SMPL-X models
+    smplx_fn = os.path.join(SMPLX_DIR, "smplx", "SMPLX_NEUTRAL.npz")
+    if not os.path.isfile(smplx_fn):
+        print(f"{smplx_fn} not found, please download SMPLX_NEUTRAL.npz file")
+        print("To do so you need to create an account in https://smpl-x.is.tue.mpg.de")
+        print(
+            "Then download 'SMPL-X-v1.1 (NPZ+PKL, 830MB) - Use thsi for SMPL-X Python codebase'"
+        )
+        print(f"Extract the zip file and move SMPLX_NEUTRAL.npz to {smplx_fn}")
+        print(
+            "Sorry for this incovenience but we do not have license for redustributing SMPLX model"
+        )
+        assert NotImplementedError
+    else:
+        print("SMPLX found")
+
+    # SMPL mean params download
+    if not os.path.isfile(MEAN_PARAMS):
+        print("Start to download the SMPL mean params")
+        os.system(
+            f"wget -O {MEAN_PARAMS}  https://openmmlab-share.oss-cn-hangzhou.aliyuncs.com/mmhuman3d/models/smpl_mean_params.npz?versionId=CAEQHhiBgICN6M3V6xciIDU1MzUzNjZjZGNiOTQ3OWJiZTJmNThiZmY4NmMxMTM4"
+        )
+        print("SMPL mean params have been succesfully downloaded")
+    else:
+        print("SMPL mean params is already here")
+
+    # Input images
+    suffixes = (".jpg", ".jpeg", ".png", ".webp")
+    l_img_path = [
+        file
+        for file in os.listdir(args.img_folder)
+        if file.endswith(suffixes) and file[0] != "."
+    ]
+
+    # Loading
+    model = load_model(args.model_name)
+
+    # Model name for saving results.
+    model_name = os.path.basename(args.model_name)
+
+    # All images
+    os.makedirs(args.out_folder, exist_ok=True)
+    l_duration = []
+    for i, img_path in enumerate(tqdm(l_img_path)):
+
+        # Path where the image + overlays of human meshes + optional views will be saved.
+        save_fn = os.path.join(
+            args.out_folder, f"{Path(img_path).stem}_{model_name}.png"
+        )
+
+        # Get input in the right format for the model
+        img_size = model.img_size
+        x, img_pil_nopad = open_image(os.path.join(args.img_folder, img_path), img_size)
+
+        # Get camera parameters
+        p_x, p_y = None, None
+        K = get_camera_parameters(model.img_size, fov=args.fov, p_x=p_x, p_y=p_y)
+
+        # Make model predictions
+        start = time.time()
+        humans = forward_model(
+            model,
+            x,
+            K,
+            det_thresh=args.det_thresh,
+            nms_kernel_size=args.nms_kernel_size,
+        )
+        duration = time.time() - start
+        l_duration.append(duration)
+
+        # Superimpose predicted human meshes to the input image.
+        img_array = np.asarray(img_pil_nopad)
+        img_pil_visu = Image.fromarray(img_array)
+        pred_rend_array, _color = overlay_human_meshes(
+            humans, K, model, img_pil_visu, unique_color=args.unique_color
+        )
+
+        # Optionally add distance as an annotation to each mesh
+        if args.distance:
+            pred_rend_array = print_distance_on_image(pred_rend_array, humans, _color)
+
+        # List of images too view side by side.
+        l_img = [img_array, pred_rend_array]
+
+        # More views
+        if args.extra_views:
+            # Render more side views of the meshes.
+            pred_rend_array_bis, pred_rend_array_sideview, pred_rend_array_bev = (
+                render_side_views(img_array, _color, humans, model, K)
+            )
+
+            # Concat
+            _img1 = np.concatenate([img_array, pred_rend_array], 1).astype(np.uint8)
+            _img2 = np.concatenate(
+                [pred_rend_array_bis, pred_rend_array_sideview, pred_rend_array_bev], 1
+            ).astype(np.uint8)
+            _h = int(_img2.shape[0] * (_img1.shape[1] / _img2.shape[1]))
+            _img2 = np.asarray(Image.fromarray(_img2).resize((_img1.shape[1], _h)))
+            _img = np.concatenate([_img1, _img2], 0).astype(np.uint8)
+        else:
+            # Concatenate side by side
+            _img = np.concatenate([img_array, pred_rend_array], 1).astype(np.uint8)
+
+        # Save to path.
+        Image.fromarray(_img).save(save_fn)
+        print(
+            f"Avg Multi-HMR inference time={int(1000*np.median(np.asarray(l_duration[-1:])))}ms on a {torch.cuda.get_device_name()}"
+        )
+
+        # Saving mesh
+        if args.save_mesh:
+            # npy file
+            l_mesh = [hum["verts_smplx"].cpu().numpy() for hum in humans]
+            with open(save_fn + ".pkl", "wb") as f:
+                pkl.dump(l_mesh, f)
+            mesh_fn = save_fn + ".npy"
+            np.save(mesh_fn, np.asarray(l_mesh), allow_pickle=True)
+            x = np.load(mesh_fn, allow_pickle=True)
+
+            # glb file
+            l_mesh = [
+                humans[j]["verts_smplx"].detach().cpu().numpy()
+                for j in range(len(humans))
+            ]
+            l_face = [
+                model.smpl_layer["neutral"].bm_x.faces for j in range(len(humans))
+            ]
+            scene = create_scene(
+                img_pil_visu,
+                l_mesh,
+                l_face,
+                color=None,
+                metallicFactor=0.0,
+                roughnessFactor=0.5,
+            )
+            scene_fn = save_fn + ".glb"
+            scene.export(scene_fn)
+
+    print("end")
+    print(count)

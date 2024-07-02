@@ -4,7 +4,14 @@
 
 import os
 
-from scripts.graphfrmpts import equation_plane, midpoint, normal_line_to_plane, frustum_equation, point_in_frustum
+from scripts.graphfrmpts import (
+    equation_plane,
+    midpoint,
+    normal_line_to_plane,
+    frustum_equation,
+    point_in_frustum,
+)
+from utils.render import print_eye_contact, print_orientation
 
 # os.environ["PYOPENGL_PLATFORM"] = "egl"
 os.environ["EGL_DEVICE_ID"] = "0"
@@ -177,7 +184,24 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
         midpoint2 = midpoint(l_eye2, r_eye2, chin2)
         plane2 = equation_plane(*l_eye2, *r_eye2, *chin2)
         vline2 = normal_line_to_plane(*plane2, *midpoint2)
-        point_frustum = point_in_frustum(*plane1, l_eye1, r_eye1, chin1, 0.1, 0.05, midpoint2)
+        point_frustum = point_in_frustum(
+            *plane1, l_eye1, r_eye1, chin1, 0.1, 0.05, midpoint2
+        )
+
+        # code to which place the first person is looking
+        nose1 = list(verts_list[0][2922 - 1].tolist())
+        back_of_head1 = list(verts_list[0][8981 - 1].tolist())
+        l_wrist1 = list(verts_list[0][4628 - 1].tolist())
+        w_wrist1 = list(verts_list[0][7593 - 1].tolist())
+        nose2 = list(verts_list[1][2922 - 1].tolist())
+        back_of_head2 = list(verts_list[1][8981 - 1].tolist())
+        l_wrist2 = list(verts_list[1][4628 - 1].tolist())
+        w_wrist2 = list(verts_list[1][7593 - 1].tolist())
+        # if z of nose smaller than z of back of head then facing towards camera
+        # then check if right hand x is larger than left hand x
+        # if z of nose is larger than z of head, then check if left hand x is larger than right hand x to check if arms crossed
+
+        print("More than one human detected")
 
     with open("verts.txt", "w") as f:
         f.write(f"l_eye1: {l_eye1}\n")
@@ -221,7 +245,35 @@ def overlay_human_meshes(humans, K, model, img_pil, unique_color=False):
         alpha=1.0,
         color=_color,
     )
-
+    if nose1[2] < back_of_head1[2]:
+        if w_wrist1[0] > l_wrist1[0]:
+            print("arms crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "crossed", 0)
+        else:
+            print("arms not crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "not crossed", 0)
+    else:
+        if w_wrist1[0] < l_wrist1[0]:
+            print("not crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "not crossed", 0)
+        else:
+            print("arms crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "crossed", 0)
+    if nose2[2] < back_of_head2[2]:
+        if w_wrist2[0] > l_wrist2[0]:
+            print("arms crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "crossed", 1)
+        else:
+            print("arms not crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "not crossed", 1)
+    else:
+        if w_wrist2[0] < l_wrist2[0]:
+            print("not crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "not crossed", 1)
+        else:
+            print("arms crossed")
+            pred_rend_array = print_orientation(pred_rend_array, "crossed", 0)
+    pred_rend_array = print_eye_contact(pred_rend_array, point_frustum)
     return pred_rend_array, _color
 
 

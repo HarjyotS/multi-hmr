@@ -500,6 +500,31 @@ def print_eye_contact(pred_rend_array, cont, font_path="arial.ttf", font_size=24
     return np.asarray(rend_pil)
 
 
+def print_orientation(
+    pred_rend_array, direction, person, font_path="arial.ttf", font_size=24
+):
+    # Read the font file into memory
+    with open(font_path, "rb") as f:
+        font_bytes = f.read()
+
+    font_stream = io.BytesIO(font_bytes)
+
+    # Load the font from the file-like object
+    font = ImageFont.truetype(font_stream, font_size)
+    rend_pil = Image.fromarray(pred_rend_array)
+    draw = ImageDraw.Draw(rend_pil)
+
+    # Type the variable cont boolean in the top left of the image
+    txt = f"Person {person} has {direction} arms"
+    fill = (100, 155, 155)
+    if person == 0:
+        draw.text((100, 120), txt, fill=fill, font=font)
+    if person == 1:
+        draw.text((100, 150), txt, fill=fill, font=font)
+
+    return np.asarray(rend_pil)
+
+
 def get_bbox(points, factor=1.0, output_format="xywh"):
     """
     Args:
